@@ -107,8 +107,24 @@ func Check() ([]Result, error) {
 	proxies = proxyutils.DeduplicateProxies(proxies)
 	slog.Info(fmt.Sprintf("去重后节点数量: %d", len(proxies)))
 
+	// ============ 新增部分: 移除上次丢弃的节点 ============
+	discardedProxies := GetDiscardedProxies()
+	proxies = RemoveDiscardedProxies(proxies, discardedProxies)
+	slog.Info(fmt.Sprintf("移除上次丢弃的节点后，剩余: %d", len(proxies)))
+	// ================================
+
 	checker := NewProxyChecker(len(proxies))
-	return checker.run(proxies)
+	results, err := checker.run(proxies)
+
+	// ============ 新增部分: 保存丢弃记录到文件 ============
+	if discardRecorder != nil {
+		if err := discardRecorder.Save(); err != nil {
+			slog.Error(fmt.Sprintf("保存丢弃记录失败: %v", err))
+		}
+	}
+	// ================================
+
+	return results, err
 }
 
 // Run 运行检测流程
@@ -203,14 +219,16 @@ func (pc *ProxyChecker) checkProxy(proxy map[string]any) *Result {
 
 	google, err := platform.CheckAlive(httpClient.Client)
 	if err != nil || !google {
-		return nil
+        RecordDiscard(proxy, "unavailable", 0)
+        return nil
 	}
 
 	var speed int
 	if config.GlobalConfig.SpeedTestUrl != "" {
 		speed, _, err = platform.CheckSpeed(httpClient.Client, Bucket, httpClient.BytesRead)
 		if err != nil || speed < config.GlobalConfig.MinSpeed {
-			return nil
+            RecordDiscard(proxy, "low_speed", speed)
+            return nil
 		}
 	}
 
