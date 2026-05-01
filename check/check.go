@@ -57,6 +57,11 @@ type ProxyChecker struct {
 	available  int32 // alive-stage pass count;  shared with showProgress
 }
 
+// NewProxyChecker 创建一个 ProxyChecker 并预分配结果切片
+func NewProxyChecker(capacity int) *ProxyChecker {
+	return &ProxyChecker{results: make([]Result, 0, capacity)}
+}
+
 var Progress atomic.Uint32
 var Available atomic.Uint32
 var ProxyCount atomic.Uint32
@@ -191,10 +196,24 @@ func Check() ([]Result, error) {
 	proxies = proxyutils.DeduplicateProxies(proxies)
 	slog.Info(fmt.Sprintf("去重后节点数量: %d", len(proxies)))
 
-	checker := &ProxyChecker{
-		results: make([]Result, 0),
+	// ============ 新增部分: 移除上次丢弃的节点 ============
+	discardedProxies := GetDiscardedProxies()
+	proxies = RemoveDiscardedProxies(proxies, discardedProxies)
+	slog.Info(fmt.Sprintf("移除上次丢弃的节点后，剩余: %d", len(proxies)))
+	// ================================
+
+	checker := NewProxyChecker(len(proxies))
+	results, err := checker.run(proxies)
+
+	// ============ 新增部分: 保存丢弃记录到文件 ============
+	if discardRecorder != nil {
+		if err := discardRecorder.Save(); err != nil {
+			slog.Error(fmt.Sprintf("保存丢弃记录失败: %v", err))
+		}
 	}
-	return checker.run(proxies)
+	// ================================
+
+	return results, err
 }
 
 // run drives the 4-stage pipeline: dispatch → alive → media+filter → speed → collect.
@@ -519,6 +538,8 @@ func (pc *ProxyChecker) checkAlive(proxy map[string]any) *aliveResult {
 
 	alive, err := platform.CheckAlive(httpClient.Client)
 	if err != nil || !alive {
+		// 记录为丢弃项，供下次跳过
+		RecordDiscard(proxy, "unavailable", 0)
 		return nil
 	}
 
@@ -544,6 +565,10 @@ func (pc *ProxyChecker) checkSpeed(r Result, speedTestURL string) *Result {
 
 	speed, _, err := platform.CheckSpeed(httpClient.Client, Bucket, httpClient.BytesRead, speedTestURL)
 	if err != nil || speed < config.GlobalConfig.MinSpeed {
+		// 记录为丢弃项，供下次跳过
+		if r.Proxy != nil {
+			RecordDiscard(r.Proxy, "low_speed", speed)
+		}
 		return nil
 	}
 

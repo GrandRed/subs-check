@@ -99,6 +99,12 @@ func (app *App) Initialize() error {
 	// 启动内存监控
 	monitor.StartMemoryMonitor()
 
+	// 初始化丢弃记录器
+	if err := check.InitDiscardRecorder(config.GlobalConfig.OutputDir); err != nil {
+		slog.Error(fmt.Sprintf("初始化丢弃记录器失败: %v", err))
+		// 不中断程序，继续运行
+	}
+
 	// 设置信号处理器
 	utils.SetupSignalHandler(check.RequestCancel)
 	return nil
